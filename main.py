@@ -1,164 +1,203 @@
-from Bio import SeqIO
-from Bio.Align.Applications import ClustalwCommandline, MafftCommandline, ClustalOmegaCommandline, MuscleCommandline, TCoffeeCommandline, ProbconsCommandline
-from Bio import AlignIO, Phylo
-from Bio.Phylo.TreeConstruction import DistanceCalculator, DistanceTreeConstructor
-from Bio.Phylo.Applications import RaxmlCommandline
-
 import os
+import time
+import psutil
+import threading
+import pandas as pd
+import shutil 
 
+from Bio import AlignIO, Phylo, SeqIO
+from Bio.Phylo.TreeConstruction import DistanceCalculator, DistanceTreeConstructor
+from Bio.Align.Applications import ClustalwCommandline, MuscleCommandline, ClustalOmegaCommandline, MafftCommandline, ProbconsCommandline, TCoffeeCommandline
 
-def sequence_align(input_file: str,
-                   output_file: str,
-                   algorithm: str,
-                   output_dir: str):
+def alinhamento(INPUT_PATH,
+                OUTPUT_PATH,
+                INPUT_FILE, 
+                algoritmo):
 
-    output_file = os.path.join(output_dir, output_file)
+    OUTPUT_FILE = os.path.join(OUTPUT_PATH, INPUT_FILE.split('.')[0] + '_' + algoritmo + '.aln')
 
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
-
-    lista_algoritmos = [
-        'muscle',
-        'clustalw',
-        'clustalo',
-        'mafft',
-        'probcons',
-        't-coffee'
-    ]
-
-    if algorithm not in lista_algoritmos:
-        print('Algoritmo de alinhamento ainda não implementado')
-        return None
-
-    # Carregar as sequências a serem alinhadas
-    sequences = SeqIO.parse(input_file, "fasta")
-
-    # # Escrever as sequências em um arquivo temporário no formato FASTA
-    # SeqIO.write(sequences, "temp.fasta", "fasta")
-
-    match algorithm.lower():
-
-        case "muscle":
-            # Definir a linha de comando para executar o MUSCLE
-            muscle_cline = MuscleCommandline(input=input_file, out=output_file)
-
-            # Executar o MUSCLE
-            stdout, stderr = muscle_cline()
-
-        case "clustalw":
-            # Definir a linha de comando para executar o ClustalW
-            clustalw_cline = ClustalwCommandline("clustalw", infile=input_file, outfile=output_file)
-
-            # Executar o ClustalW
+    # print(f' --- {algoritmo} ---')
+    match algoritmo.lower():
+        case 'clustalw':
+            clustalw_cline = ClustalwCommandline("clustalw",
+                                             infile=os.path.join(INPUT_PATH, INPUT_FILE),
+                                             outfile=OUTPUT_FILE)
             stdout, stderr = clustalw_cline()
-
-        case "clustalo":
-            # Definir a linha de comando para executar o Clustal Omega
+    
+        case 'muscle':
+            muscle_cline = MuscleCommandline(input=os.path.join(INPUT_PATH, INPUT_FILE),
+                                             out=OUTPUT_FILE
+                                             # ,clwout=True
+                                            )
+            
+            stdout, stderr = muscle_cline()
+            print(stdout)
+    
+        case 'clustalo':
             clustalo_cline = ClustalOmegaCommandline(
-                infile=input_file,
-                outfile=output_file,
+                infile=os.path.join(INPUT_PATH, INPUT_FILE),
+                outfile=OUTPUT_FILE,
                 verbose=True,
                 auto=True
             )
-
-            # Executar o Clustal Omega
+            
             stdout, stderr = clustalo_cline()
-
-        case "mafft":
-            # Definir a linha de comando para executar o MAFFT
-            mafft_cline = MafftCommandline(input=input_file)
-
-            # Executar o MAFFT
+    
+        case 'mafft':
+            mafft_cline = MafftCommandline(
+                input=os.path.join(INPUT_PATH, INPUT_FILE)
+            )
+            
             stdout, stderr = mafft_cline()
-            with open(output_file, "w") as handle:
+            
+            with open(OUTPUT_FILE, "w") as handle:
                 handle.write(stdout)
-
-        case "t-coffee":
-            # Crie o objeto de linha de comando para o T-Coffee
-            tcoffee_cline = TCoffeeCommandline(infile=input_file,
-                                               output="clustalw",
-                                               outfile=output_file)
+    
+        case 'probcons':
+            probcons_cline = ProbconsCommandline(input=os.path.join(INPUT_PATH, INPUT_FILE),
+                                                 clustalw=True)
+            stdout, stderr = probcons_cline()
+            
+            with open(OUTPUT_FILE, "w") as handle:
+                handle.write(stdout)
+    
+        case 't-coffee':
+            tcoffee_cline = TCoffeeCommandline(infile=os.path.join(INPUT_PATH, INPUT_FILE),
+                                           output="clustalw",
+                                           outfile=OUTPUT_FILE)
             tcoffee_cline()
 
-        case "probcons":
-            probcons_cline = ProbconsCommandline(input=input_file, clustalw=True)
-            stdout, stderr = probcons_cline()
+        case other:
+            print('Algotitmo não implementado')
 
-            with open(output_file, "w") as handle:
-                handle.write(stdout)
+def construcao_arvore(INPUT_PATH,
+                      OUTPUT_PATH,
+                      OUTPUT_FORMAT,
+                      sequencia_alinhada, 
+                      modelo_evolutivo):
 
+    nome = sequencia_alinhada.split('.')[0]
+    arquivo_saida = f'{nome}_{modelo_evolutivo}.{OUTPUT_FORMAT}'
 
-def construir_arvore_filogenetica(sequencia_alinhada: str,
-                                  caminho_saida: str,
-                                  formato_saida: str,
-                                  metodo: str
-                                  ) -> None:
-    if formato_saida not in [
-        'newick'
-    ]:
-        print(f'Formato de saída {formato_saida} não aceito')
-        return None
-
-    # Carregar o arquivo de alinhamento de sequências
-    aln = AlignIO.read(sequencia_alinhada, "clustal")
-
-    match metodo.lower():
-        case 'distancetreeconstructor':
-            # Calcular as distâncias entre as sequências
-            calculator = DistanceCalculator('identity')
-            dm = calculator.get_distance(aln)
-
-            # Construir a árvore filogenética
-            constructor = DistanceTreeConstructor()
+    try:
+        with open(os.path.join(INPUT_PATH, sequencia_alinhada), "r") as file:
+            alignment = AlignIO.read(file, "fasta")
+    except ValueError:
+        with open(os.path.join(INPUT_PATH, sequencia_alinhada), "r") as file:
+            alignment = AlignIO.read(file, "clustal")
+    
+    calculator = DistanceCalculator('identity')
+    constructor = DistanceTreeConstructor()
+    
+    # Calcula a matriz de distâncias
+    dm = calculator.get_distance(alignment)
+    
+    match modelo_evolutivo.lower():
+        case 'nj':
+            tree = constructor.nj(dm)
+        case 'upgma':
             tree = constructor.upgma(dm)
+        case other:
+            print('Modelo evolutivo não encontrado')
 
-            # Salvar a árvore em um arquivo
-            Phylo.write(tree, os.path.join(caminho_saida, "arvore_filogenetica.nwk"), formato_saida)
+    Phylo.write(tree,
+                os.path.join(
+                    OUTPUT_PATH,
+                    arquivo_saida),
+                    OUTPUT_FORMAT)
 
-        case 'raxml':
-            ## Executar o RAxML
-            AlignIO.write(aln, "temp.phy", "phylip")
+def monitor_system():
+    initial_disk_io = psutil.disk_io_counters()
+    while monitorar:
+        # Utilização de CPU
+        cpu_usage = psutil.cpu_percent(interval=1)
+        memory_info = psutil.virtual_memory()
+        disk_usage = psutil.disk_usage('/')
+        net_io = psutil.net_io_counters()
+        current_disk_io = psutil.disk_io_counters()
+        read_bytes = current_disk_io.read_bytes - initial_disk_io.read_bytes
+        write_bytes = current_disk_io.write_bytes - initial_disk_io.write_bytes
 
-            raxml_cline = RaxmlCommandline(
-                sequence="temp.phy",
-                model="GTRGAMMA",
-                rapid_bootstrap=100,
-                num_replicates=10,
-                parsimony_seed=12345,
-                name="output"
-            )
-            stdout, stderr = raxml_cline()
+        dados_monitoramento = {
+            'Tarefa': tarefa,
+            'Algoritmo': algoritmo,
+            'Arquivo de Entrada': arquivo_entrada,
+            'Modelo Evolutivo': modelo_evolutivo,
+            'Formato Saida': formato_saida,
+            'Utilização de CPU': cpu_usage,
+            'Memória total:': memory_info.total / (1024 ** 3),
+            'Memória disponível': memory_info.available / (1024 ** 3),
+            'Uso de memória': memory_info.percent,
+            'Espaço total em disco': disk_usage.total / (1024 ** 3),
+            'Espaço usado em disco': disk_usage.used / (1024 ** 3),
+            'Espaço livre em disco': disk_usage.free / (1024 ** 3),
+            'Uso de disco': disk_usage.percent,
+            'Bytes lidos': read_bytes / (1024 ** 2),
+            'Bytes escritos': write_bytes / (1024 ** 2),
+            'Bytes enviados': net_io.bytes_sent / (1024 ** 2),
+            'Bytes recebidos': net_io.bytes_recv / (1024 ** 2),
+            'Timestamp': time.time()
+        }
+        dados.append(dados_monitoramento)
+        time.sleep(5)  # Intervalo de 5 segundos
 
-            stdout, stderr = raxml_cline()
+def limpar_saidas():
+    shutil.rmtree(os.path.join('files', 'output'))
+    os.mkdir(os.path.join('files', 'output'))
+    os.mkdir(os.path.join('files', 'output', 'arvores_filogeneticas'))
+    os.mkdir(os.path.join('files', 'output', 'sequencias_alinhadas'))
 
-    print('Arvore construida com sucesso')
 
+limpar_saidas()
 
-def mostrar_arvore(caminho_arvore: str,
-                   formato: str):
-    # Ler a árvore filogenética de saída
-    tree = Phylo.read(caminho_arvore, formato)
+monitorar = True
+dados = []
 
-    # Visualizar a árvore
-    Phylo.draw(tree)
+tarefa = None
+arquivo_entrada = None
+modelo_evolutivo = None
+formato_saida = None
+algoritmo = None
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    input_file = os.path.join('files', 'input', 'ls_orchid.fasta')
-    output_dir = os.path.join('files', 'output', 'sequencias_alinhadas')
-    sequence_align(input_file,
-                   'aligned.aln',
-                   'probcons',
-                   output_dir)
+# Inicia o monitor do sistema
+monitor_thread = threading.Thread(target=monitor_system)
+monitor_thread.daemon = True  # Permite que a thread seja finalizada quando o programa principal termina
+monitor_thread.start()
 
-    input_folder = os.path.join('files', 'output', 'sequencias_alinhadas')
-    output_folder = os.path.join('files', 'output', 'arvores_filogeneticas')
-    construir_arvore_filogenetica(
-        os.path.join(input_folder, 'aligned.aln'),
-        output_folder,
-        'newick',
-        'distancetreeconstructor'
-    )
+INPUT_PATH = os.path.join('files', 'input')
+OUTPUT_PATH = os.path.join('files', 'output', 'sequencias_alinhadas')
+INPUT_FILE = 'ls_orchid.fasta'
 
-    caminho_arvore = os.path.join(output_folder, "arvore_filogenetica.nwk")
-    mostrar_arvore(caminho_arvore, 'newick')
+algoritmos = ['clustalw', 'muscle', 'clustalo', 'mafft', 'probcons', 't-coffee']
+
+tarefa = 'Sequenciamento'
+for algoritmo in algoritmos:
+    arquivo_entrada = INPUT_FILE
+    alinhamento(INPUT_PATH,
+                OUTPUT_PATH,
+                INPUT_FILE,
+                algoritmo)
+
+INPUT_PATH = os.path.join('files', 'output', 'sequencias_alinhadas')
+OUTPUT_PATH = os.path.join('files', 'output', 'arvores_filogeneticas')
+
+modelos_evolutivos = ['nj', 'upgma']
+formatos_saida = ['nexus', 'newick']
+
+tarefa = 'Criação de Árvore'
+for sequencia_alinhada in os.listdir(INPUT_PATH):
+    if sequencia_alinhada.endswith('.aln'):
+        for modelo_evolutivo in modelos_evolutivos:
+            for formato_saida in formatos_saida:
+                if sequencia_alinhada.endswith('.aln'):
+                    arquivo_entrada = sequencia_alinhada
+                    construcao_arvore(INPUT_PATH,
+                                      OUTPUT_PATH,
+                                      formato_saida,
+                                      sequencia_alinhada,
+                                      modelo_evolutivo)
+
+# Para o monitoramento
+monitorar = False
+aux = pd.DataFrame(dados)
+aux.to_csv('saida.csv', index=False) {:.2f}
